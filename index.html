@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Finger Bend Musical Instrument</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+    <script src="https://unpkg.com/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://unpkg.com/@mediapipe/hands/hands.js"></script>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            background-color: #f0f0f0; 
+            margin: 0;
+            padding: 20px;
+        }
+        canvas {
+            border: 2px solid #333;
+            border-radius: 10px;
+        }
+        #status {
+            margin: 10px 0;
+            font-size: 18px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>Finger Bend Musical Instrument</h1>
+    <div id="status">Loading hand tracking...</div>
+    <script>
+        // Complex musical scale across multiple octaves
+        const fingerNotes = [
+            { name: 'Thumb', baseFreq: 130.81, octaves: [2,3,4] },   // C3, C4, C5
+            { name: 'Index', baseFreq: 146.83, octaves: [2,3,4] },   // D3, D4, D5
+            { name: 'Middle', baseFreq: 164.81, octaves: [2,3,4] },  // E3, E4, E5
+            { name: 'Ring', baseFreq: 174.61, octaves: [2,3,4] },    // F3, F4, F5
+            { name: 'Pinky', baseFreq: 196.00, octaves: [2,3,4] }    // G3, G4, G5
+        ];
+
+        let video, hands, audioContext, mediaCamera;
+        let detectedHands = [];
+        let playedNotes = []; // Track recently played notes
+        
+        function calculateFrequency(baseFreq, octaveIndex) {
+            return baseFreq * Math.pow(2, octaveIndex);
+        }
+
+        function playSound(frequency) {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            // Prevent rapid repeated notes
+            const currentTime = audioContext.currentTime;
+            const recentNote = playedNotes.find(note => 
+                Math.abs(note.freq - frequency) < 1 && 
+                currentTime - note.time < 0.5
+            );
+            
+            if (recentNote) return;
+
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            // More complex waveform for richer sound
+            oscillator.type = 'triangle';
+            oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+
+            // Soft attack and release
+            gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0.5, audioContext.currentTime + 0.1);
+            gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.5);
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + 0.5);
+
+            // Track played note
+            playedNotes.push({ freq: frequency, time: currentTime });
+            
+            // Clean up old notes
+            playedNotes = playedNotes.filter(note => 
+                currentTime - note.time < 2
+            );
+        }
+
+        function calculateFingerBend(landmarks, fingerIndices) {
+            const [metacarpal, proximal, middle, distal] = fingerIndices.map(idx => landmarks[idx]);
+            
+            // Calculate angles between finger joints
+            const angle1 = Math.atan2(
+                proximal.y - metacarpal.y, 
+                proximal.x - metacarpal.x
+            );
+            
+            const angle2 = Math.atan2(
+                middle.y - proximal.y, 
+                middle.x - proximal.x
+            );
+            
+            const angle3 = Math.atan2(
+                distal.y - middle.y, 
+                distal.x - middle.x
+            );
+
+            // Combine angles to determine bend
+            const totalBend = Math.abs(angle1 - angle2) + Math.abs(angle2 - angle3);
+            return totalBend;
+        }
+
+        // Finger landmark indices for MediaPipe
+        const fingerLandmarkIndices = {
+            thumb: [1, 2, 3, 4],
+            index: [5, 6, 7, 8],
+            middle: [9, 10, 11, 12],
+            ring: [13, 14, 15, 16],
+            pinky: [17, 18, 19, 20]
+        };
+
+        function processHandNotes(hand) {
+            Object.entries(fingerLandmarkIndices).forEach(([fingerName, indices], index) => {
+                const bend = calculateFingerBend(hand, indices);
+                
+                // If finger is significantly bent
+                if (bend > 1.5) {  // Adjust threshold as needed
+                    const note = fingerNotes[index];
+                    const octaveIndex = Math.floor(Math.random() * note.octaves.length);
+                    const frequency = calculateFrequency(note.baseFreq, note.octaves[octaveIndex]);
+                    
+                    playSound(frequency);
+
+                    // Visual feedback
+                    fill(255, 0, 0, 150);
+                    const tipLandmark = hand[indices[3]];
+                    circle(tipLandmark.x * width, tipLandmark.y * height, 20);
+                }
+            });
+        }
+
+        function setup() {
+            let cnv = createCanvas(640, 480);
+            cnv.parent(document.body);
+
+            video = createCapture(VIDEO);
+            video.size(width, height);
+            video.hide();
+
+            hands = new Hands({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            });
+            
+            hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults((results) => {
+                detectedHands = results.multiHandLandmarks || [];
+                document.getElementById('status').textContent = 
+                    `Detected Hands: ${detectedHands.length}`;
+            });
+
+            mediaCamera = new Camera(video.elt, {
+                onFrame: async () => {
+                    await hands.send({image: video.elt});
+                },
+                width: 640,
+                height: 480
+            });
+
+            mediaCamera.start();
+        }
+
+        function draw() {
+            translate(width, 0);
+            scale(-1, 1);
+            image(video, 0, 0, width, height);
+
+            detectedHands.forEach(processHandNotes);
+        }
+    </script>
+</body>
+</html>
